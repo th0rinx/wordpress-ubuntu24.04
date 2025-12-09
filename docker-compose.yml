@@ -1,0 +1,84 @@
+name: wordpress
+services:
+  wp-db:
+    container_name: wp-db
+    hostname: wp-db
+    image: mysql:8.0-debian
+    networks:
+      - shared_network
+    restart: always
+    volumes:
+      - ./data/wp-db:/var/lib/mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PWD}
+      MYSQL_DATABASE: ${MYSQL_DB}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PWD}
+    healthcheck:
+      test: ['CMD', 'mysqladmin', 'ping', '-h', 'localhost', '-u', 'root', '-p$${MYSQL_ROOT_PWD}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+  wp:
+    container_name: wp
+    hostname: wp
+    image: wordpress:latest
+    networks:
+      - shared_network
+    ports:
+      - '8888:80'
+    restart: always
+    depends_on:
+      wp-db:
+        condition: service_healthy
+    volumes:
+      - ./data/wp:/var/www/html
+      - ./config/php.ini:/usr/local/etc/php/conf.d/conf.ini:ro
+    environment:
+      WORDPRESS_DB_HOST: wp-db
+      WORDPRESS_DB_USER: ${MYSQL_USER}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PWD}
+      WORDPRESS_DB_NAME: ${MYSQL_DB}
+  wp-cli:
+    container_name: wp-cli
+    hostname: wp-cli
+    image: wordpress:cli
+    networks:
+      - shared_network
+    depends_on:
+      wp-db:
+        condition: service_healthy
+      wp:
+        condition: service_started
+    volumes:
+      - ./data/wp:/var/www/html
+      - ./config/php.ini:/usr/local/etc/php/conf.d/conf.ini:ro
+    environment:
+      WORDPRESS_DB_HOST: wp-db
+      WORDPRESS_DB_USER: ${MYSQL_USER}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PWD}
+      WORDPRESS_DB_NAME: ${MYSQL_DB}
+  pma:
+    container_name: pma
+    hostname: pma
+    image: phpmyadmin:latest
+    networks:
+      - shared_network
+    ports:
+      - '8081:80'
+    restart: always
+    depends_on:
+      wp-db:
+        condition: service_healthy
+    volumes:
+      - ./config/php.ini:/usr/local/etc/php/conf.d/conf.ini:ro
+    environment:
+      PMA_HOST: wp-db
+      PMA_PORT: 3306
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PWD}
+      UPLOAD_LIMIT: 50M
+networks:
+  shared_network:
+    name: shared_network
+    driver: bridge
+    external: true
