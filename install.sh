@@ -6,7 +6,7 @@ NPM_IP="${NPM_IP:-34.118.175.190}"    # IP pública de TU NPM (ajustar)
 SSH_PORT="${SSH_PORT:-22}"            # puerto SSH
 BIND_IP="${BIND_IP:-0.0.0.0}"         # en compose, puerto 5678 escucha en esta IP del host
 
-LOG="/var/log/n8n-host-setup.log"
+LOG="/var/log/wordpress-setup.log"
 export DEBIAN_FRONTEND=noninteractive
 
 mkdir -p "$(dirname "$LOG")"
