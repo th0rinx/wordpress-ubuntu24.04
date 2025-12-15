@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ===== Configurables =====
-NPM_IP="${NPM_IP:-34.118.175.190}"    # IP pública de TU NPM (ajustar)
+NPM_IP="${NPM_IP:-34.118.175.190}"    # IP pública de TU NPM (ajustar si hace falta)
 SSH_PORT="${SSH_PORT:-22}"            # puerto SSH
 BIND_IP="${BIND_IP:-0.0.0.0}"         # en compose, puerto 5678 escucha en esta IP del host
 
@@ -49,19 +49,30 @@ apt-get install -y ufw
 ufw default deny incoming
 ufw default allow outgoing
 
-# SSH
+# SSH desde cualquier lado
 ufw allow "${SSH_PORT}"/tcp
-# n8n solo desde NPM
+
+# n8n solo desde NPM (puerto 5678)
 ufw allow from "${NPM_IP}"/32 to any port 5678 proto tcp
 
-# habilitar UFW (no corta la conexión si la regla de SSH ya está)
+# HTTP (80) – abierto a todos
+ufw allow 80/tcp
+# y explícitamente también desde el NPM (no es necesario, pero reproduce la línea que querés ver)
+ufw allow from "${NPM_IP}"/32 to any port 80 proto tcp
+
+# Puerto 8888 abierto a todos (por ej. phpMyAdmin o lo que uses ahí)
+ufw allow 8888/tcp
+
+# habilitar UFW
 ufw --force enable
 ufw status verbose
 
-# Reglas extra en DOCKER-USER para que Docker no “saltee” UFW
+# Reglas extra en DOCKER-USER para que Docker no “saltee” UFW en 5678
 # Acepta 5678 sólo desde NPM_IP y cae el resto
-iptables -C DOCKER-USER -p tcp --dport 5678 -s "${NPM_IP}" -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 5678 -s "${NPM_IP}" -j ACCEPT
-iptables -C DOCKER-USER -p tcp --dport 5678 ! -s "${NPM_IP}" -j DROP 2>/dev/null || iptables -I DOCKER-USER -p tcp --dport 5678 ! -s "${NPM_IP}" -j DROP
+iptables -C DOCKER-USER -p tcp --dport 5678 -s "${NPM_IP}" -j ACCEPT 2>/dev/null || \
+  iptables -I DOCKER-USER -p tcp --dport 5678 -s "${NPM_IP}" -j ACCEPT
+iptables -C DOCKER-USER -p tcp --dport 5678 ! -s "${NPM_IP}" -j DROP 2>/dev/null || \
+  iptables -I DOCKER-USER -p tcp --dport 5678 ! -s "${NPM_IP}" -j DROP
 
 # ===== 4) Compose: asegurar archivos y levantar =====
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,7 +81,6 @@ cd "$SCRIPT_DIR"
 # Verificaciones mínimas
 [[ -f docker-compose.yml ]] || { echo "[install] docker-compose.yml no encontrado"; exit 1; }
 [[ -f init-data.sh ]] || { echo "[install] init-data.sh no encontrado"; exit 1; }
-# Tu .env ya lo tenés; si no existiera, sería recomendable abortar:
 # [[ -f .env ]] || { echo "[install] .env no encontrado"; exit 1; }
 
 # (opcional) bind a IP concreta en el compose (si querés evitar 0.0.0.0)
@@ -80,10 +90,10 @@ chmod +x init-data.sh
 docker compose pull
 docker compose up -d
 
-# esperar a que n8n esté escuchando
-echo "[install] esperando que n8n escuche en 5678…"
+# esperar a que el servicio en 5678 esté escuchando
+echo "[install] esperando que el servicio escuche en 5678…"
 for i in $(seq 1 60); do
-  (nc -z 127.0.0.1 5678 && echo "[install] n8n up") && break || sleep 2
+  (nc -z 127.0.0.1 5678 && echo "[install] servicio up en 5678") && break || sleep 2
 done
 
 docker compose ps
