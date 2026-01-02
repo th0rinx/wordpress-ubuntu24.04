@@ -14,6 +14,10 @@ if [[ -f "$MARKER" ]]; then
   exit 0
 fi
 
+# ===== Base dir: donde vive este install.sh (repo clonado) =====
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
 # ===== 0) detectar Ubuntu codename =====
 . /etc/os-release
 CODENAME="${VERSION_CODENAME:-$(lsb_release -sc 2>/dev/null || echo noble)}"
@@ -57,44 +61,83 @@ compose() {
 }
 
 # ===== 3) Firewall básico =====
-apt-get install -y ufw curl netcat-openbsd
+apt-get install -y ufw netcat-openbsd
 
 ufw default deny incoming
 ufw default allow outgoing
-
 ufw allow 22/tcp
 ufw allow 8888/tcp     # WordPress
 ufw allow 8081/tcp     # phpMyAdmin
-
-# (opcional) si vas a poner un reverse proxy en el mismo VPS
-# ufw allow 80/tcp
-# ufw allow 443/tcp
-
 ufw --force enable
 ufw status verbose || true
 
-# ===== 4) Levantar Compose =====
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
+# ===== 4) Validaciones =====
 [[ -f docker-compose.yml ]] || { echo "[install] docker-compose.yml no encontrado"; exit 1; }
 [[ -f .env ]] || { echo "[install] .env no encontrado"; exit 1; }
 
+# ===== 5) Levantar stack con 1 intento de auto-reparación de DB =====
+echo "[install] pull imágenes"
 compose pull
-compose up -d
-compose ps
 
-# ===== 5) Esperar WordPress =====
-echo "[install] esperando WordPress en http://127.0.0.1:8888 ..."
-for i in $(seq 1 60); do
-  if curl -fsS "http://127.0.0.1:8888/wp-login.php" >/dev/null 2>&1; then
-    echo "[install] WordPress OK"
-    break
-  fi
-  sleep 2
-done
+start_stack() {
+  echo "[install] up -d"
+  compose up -d
+  compose ps || true
+}
 
-# Marcar instalado
+mysql_looks_bad() {
+  # Señales típicas de inicialización inconsistente (como tu ERROR 1045)
+  docker logs --tail 200 wp-db 2>/dev/null | grep -Eq \
+    "Access denied for user 'root'@'localhost'|initialize-insecure|empty password"
+}
+
+wait_mysql_healthy() {
+  echo "[install] esperando wp-db healthy..."
+  for i in $(seq 1 90); do
+    status="$(docker inspect -f '{{.State.Health.Status}}' wp-db 2>/dev/null || true)"
+    if [[ "$status" == "healthy" ]]; then
+      echo "[install] wp-db healthy"
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+wait_wordpress() {
+  echo "[install] esperando WordPress en http://127.0.0.1:8888/wp-login.php ..."
+  for i in $(seq 1 90); do
+    if curl -fsS "http://127.0.0.1:8888/wp-login.php" >/dev/null 2>&1; then
+      echo "[install] WordPress OK"
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+start_stack
+
+# Espera MySQL; si no queda healthy o los logs muestran inconsistencia → reset 1 vez
+if ! wait_mysql_healthy || mysql_looks_bad; then
+  echo "[install] detecté MySQL inconsistente o no-healthy. Reseteando volumen de DB (VPS nuevo) y reintentando 1 vez..."
+  compose down -v || true
+  rm -rf ./data/wp-db || true
+  start_stack
+  wait_mysql_healthy
+fi
+
+# Si WordPress no levanta, falla el script (NO marca instalado)
+if ! wait_wordpress; then
+  echo "[install] ERROR: WordPress no respondió. Logs:"
+  compose ps || true
+  docker logs --tail 200 wp-db || true
+  docker logs --tail 200 wp || true
+  docker logs --tail 200 pma || true
+  exit 1
+fi
+
+# ===== 6) Marcar instalado solo si está OK =====
 mkdir -p /var/local
 date -Iseconds > "$MARKER"
 echo "[install] done. Marker: $MARKER"
