@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ===== Configurables =====
-NPM_IP="${NPM_IP:-34.118.175.190}"    # IP pública de TU NPM (ajustar si hace falta)
-SSH_PORT="${SSH_PORT:-22}"            # puerto SSH
-BIND_IP="${BIND_IP:-0.0.0.0}"         # en compose, puerto 5678 escucha en esta IP del host
-
 LOG="/var/log/wordpress-setup.log"
 export DEBIAN_FRONTEND=noninteractive
 
@@ -13,88 +8,95 @@ mkdir -p "$(dirname "$LOG")"
 exec > >(tee -a "$LOG") 2>&1
 echo "[install] $(date -Is) begin"
 
-# ===== 0) detectar Ubuntu codename (jammy/noble, etc.) =====
+MARKER="/var/local/wordpress_docker_installed"
+if [[ -f "$MARKER" ]]; then
+  echo "[install] SKIP: ya instalado ($MARKER)"
+  exit 0
+fi
+
+# ===== 0) detectar Ubuntu codename =====
 . /etc/os-release
-CODENAME="${VERSION_CODENAME:-$(lsb_release -sc 2>/dev/null || echo jammy)}"
+CODENAME="${VERSION_CODENAME:-$(lsb_release -sc 2>/dev/null || echo noble)}"
 echo "[install] ubuntu codename: $CODENAME"
 
-# ===== 1) actualizar sistema =====
+# ===== 1) update =====
 apt-get update -y
-apt-get -y upgrade
+apt-get upgrade -y
 
-# ===== 2) Docker Engine + compose plugin =====
-apt-get install -y ca-certificates curl gnupg lsb-release
+# ===== 2) Docker Engine + Compose =====
+apt-get install -y ca-certificates curl gnupg lsb-release git
+
 install -m 0755 -d /etc/apt/keyrings
 if [[ ! -f /etc/apt/keyrings/docker.gpg ]]; then
   curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
   chmod a+r /etc/apt/keyrings/docker.gpg
 fi
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $CODENAME stable" \
+
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${CODENAME} stable" \
   > /etc/apt/sources.list.d/docker.list
 
 apt-get update -y
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 systemctl enable --now docker
-docker --version
-docker compose version
 
-# (opcional) permitir docker sin sudo al usuario conectado
-if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-  usermod -aG docker "$SUDO_USER" || true
-  echo "[install] agregado $SUDO_USER al grupo docker"
+docker --version || true
+
+# Fallback: si por algún motivo no existe "docker compose", instala docker-compose legacy
+if ! docker compose version >/dev/null 2>&1; then
+  echo "[install] docker compose plugin no disponible, instalando docker-compose legacy..."
+  apt-get install -y docker-compose
 fi
 
-# ===== 3) Firewall UFW (host) =====
-apt-get install -y ufw
+# Helper para usar compose sin importar si es plugin o legacy
+compose() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  else
+    docker-compose "$@"
+  fi
+}
+
+# ===== 3) Firewall básico =====
+apt-get install -y ufw curl netcat-openbsd
+
 ufw default deny incoming
 ufw default allow outgoing
 
-# SSH desde cualquier lado
-ufw allow "${SSH_PORT}"/tcp
+ufw allow 22/tcp
+ufw allow 8888/tcp     # WordPress
+ufw allow 8081/tcp     # phpMyAdmin
 
-# n8n solo desde NPM (puerto 5678)
-ufw allow from "${NPM_IP}"/32 to any port 5678 proto tcp
+# (opcional) si vas a poner un reverse proxy en el mismo VPS
+# ufw allow 80/tcp
+# ufw allow 443/tcp
 
-# HTTP (80) – abierto a todos
-ufw allow 80/tcp
-# y explícitamente también desde el NPM (no es necesario, pero reproduce la línea que querés ver)
-ufw allow from "${NPM_IP}"/32 to any port 80 proto tcp
-
-# Puerto 8888 abierto a todos (por ej. phpMyAdmin o lo que uses ahí)
-ufw allow 8888/tcp
-
-# habilitar UFW
 ufw --force enable
-ufw status verbose
+ufw status verbose || true
 
-# Reglas extra en DOCKER-USER para que Docker no “saltee” UFW en 5678
-# Acepta 5678 sólo desde NPM_IP y cae el resto
-iptables -C DOCKER-USER -p tcp --dport 5678 -s "${NPM_IP}" -j ACCEPT 2>/dev/null || \
-  iptables -I DOCKER-USER -p tcp --dport 5678 -s "${NPM_IP}" -j ACCEPT
-iptables -C DOCKER-USER -p tcp --dport 5678 ! -s "${NPM_IP}" -j DROP 2>/dev/null || \
-  iptables -I DOCKER-USER -p tcp --dport 5678 ! -s "${NPM_IP}" -j DROP
-
-# ===== 4) Compose: asegurar archivos y levantar =====
+# ===== 4) Levantar Compose =====
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Verificaciones mínimas
 [[ -f docker-compose.yml ]] || { echo "[install] docker-compose.yml no encontrado"; exit 1; }
-[[ -f init-data.sh ]] || { echo "[install] init-data.sh no encontrado"; exit 1; }
-# [[ -f .env ]] || { echo "[install] .env no encontrado"; exit 1; }
+[[ -f .env ]] || { echo "[install] .env no encontrado"; exit 1; }
 
-# (opcional) bind a IP concreta en el compose (si querés evitar 0.0.0.0)
-# sed -i "s#^[[:space:]]*- 5678:5678#      - \"${BIND_IP}:5678:5678\"#g" docker-compose.yml
+compose pull
+compose up -d
+compose ps
 
-chmod +x init-data.sh
-docker compose pull
-docker compose up -d
-
-# esperar a que el servicio en 5678 esté escuchando
-echo "[install] esperando que el servicio escuche en 5678…"
+# ===== 5) Esperar WordPress =====
+echo "[install] esperando WordPress en http://127.0.0.1:8888 ..."
 for i in $(seq 1 60); do
-  (nc -z 127.0.0.1 5678 && echo "[install] servicio up en 5678") && break || sleep 2
+  if curl -fsS "http://127.0.0.1:8888/wp-login.php" >/dev/null 2>&1; then
+    echo "[install] WordPress OK"
+    break
+  fi
+  sleep 2
 done
 
-docker compose ps
-echo "[install] done. Acceso local: http://127.0.0.1:5678  (expuesto por NPM/SSL)"
+# Marcar instalado
+mkdir -p /var/local
+date -Iseconds > "$MARKER"
+echo "[install] done. Marker: $MARKER"
+echo "[install] WordPress: http://<IP_PUBLICA>:8888"
+echo "[install] phpMyAdmin: http://<IP_PUBLICA>:8081"
