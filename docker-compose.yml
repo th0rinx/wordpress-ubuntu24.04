@@ -8,6 +8,8 @@ services:
     restart: always
     volumes:
       - ./data/wp-db:/var/lib/mysql
+    env_file:
+      - .env
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PWD}
       MYSQL_DATABASE: ${MYSQL_DB}
@@ -17,7 +19,7 @@ services:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$${MYSQL_ROOT_PWD}"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   wp:
     container_name: wp
@@ -32,15 +34,20 @@ services:
     volumes:
       - ./data/wp:/var/www/html
       - ./config/php.ini:/usr/local/etc/php/conf.d/conf.ini:ro
+    env_file:
+      - .env
     environment:
       WORDPRESS_DB_HOST: wp-db
       WORDPRESS_DB_USER: ${MYSQL_USER}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PWD}
       WORDPRESS_DB_NAME: ${MYSQL_DB}
-    # acá es la clave: publicar 80 del container en 80 del host
     ports:
       - "8888:80"
-    # (podés borrar "expose" si lo tenías, es redundante)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/wp-login.php >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
 
   wp-cli:
     container_name: wp-cli
@@ -56,11 +63,14 @@ services:
     volumes:
       - ./data/wp:/var/www/html
       - ./config/php.ini:/usr/local/etc/php/conf.d/conf.ini:ro
+    env_file:
+      - .env
     environment:
       WORDPRESS_DB_HOST: wp-db
       WORDPRESS_DB_USER: ${MYSQL_USER}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PWD}
       WORDPRESS_DB_NAME: ${MYSQL_DB}
+    entrypoint: ["bash", "-lc", "sleep infinity"]
 
   pma:
     container_name: pma
@@ -74,12 +84,13 @@ services:
         condition: service_healthy
     volumes:
       - ./config/php.ini:/usr/local/etc/php/conf.d/conf.ini:ro
+    env_file:
+      - .env
     environment:
       PMA_HOST: wp-db
       PMA_PORT: 3306
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PWD}
       UPLOAD_LIMIT: 50M
-    # si querés acceder a phpMyAdmin también vía NPM, sacalo por otro puerto
     ports:
       - "8081:80"
 
