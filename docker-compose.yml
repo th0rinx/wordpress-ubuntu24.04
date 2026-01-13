@@ -11,12 +11,12 @@ services:
     env_file:
       - .env
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PWD}
-      MYSQL_DATABASE: ${MYSQL_DB}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
       MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PWD}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$${MYSQL_ROOT_PWD}"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -39,15 +39,16 @@ services:
     environment:
       WORDPRESS_DB_HOST: wp-db
       WORDPRESS_DB_USER: ${MYSQL_USER}
-      WORDPRESS_DB_PASSWORD: ${MYSQL_PWD}
-      WORDPRESS_DB_NAME: ${MYSQL_DB}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
     ports:
       - "8888:80"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost/wp-login.php >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "php -r '$c=@file_get_contents(\"http://127.0.0.1/wp-login.php\"); exit($c===false?1:0);'"]
       interval: 15s
       timeout: 5s
       retries: 20
+      start_period: 60s
 
   wp-cli:
     container_name: wp-cli
@@ -68,8 +69,8 @@ services:
     environment:
       WORDPRESS_DB_HOST: wp-db
       WORDPRESS_DB_USER: ${MYSQL_USER}
-      WORDPRESS_DB_PASSWORD: ${MYSQL_PWD}
-      WORDPRESS_DB_NAME: ${MYSQL_DB}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
     entrypoint: ["bash", "-lc", "sleep infinity"]
 
   pma:
@@ -89,7 +90,7 @@ services:
     environment:
       PMA_HOST: wp-db
       PMA_PORT: 3306
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PWD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       UPLOAD_LIMIT: 50M
     ports:
       - "8081:80"
